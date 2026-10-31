@@ -12,6 +12,7 @@ const fetchJson = async (url) => {
   return response.json();
 };
 const validIp = (value) => typeof value === 'string' && net.isIP(value) !== 0;
+const vpnCache = new Map();
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/api/ip-info', async (req, res) => {
   const ip = req.query.ip;
@@ -24,6 +25,8 @@ app.get('/api/ip-info', async (req, res) => {
 app.get('/api/vpn', async (req, res) => {
   const ip = req.query.ip;
   if (!validIp(ip)) return res.status(400).json({ error: 'Некорректный IP-адрес' });
+  const cached = vpnCache.get(ip);
+  if (cached && cached.expires > Date.now()) return res.json(cached.value);
   try {
     const key = process.env.PROXYCHECK_API_KEY;
     const params = new URLSearchParams({ vpn: '1', asn: '1' });
@@ -31,8 +34,11 @@ app.get('/api/vpn', async (req, res) => {
     const data = await fetchJson(`https://proxycheck.io/v2/${encodeURIComponent(ip)}?${params}`);
     const entry = data[ip];
     if (data.status !== 'ok' || !entry) throw new Error(data.message || 'Данные недоступны');
-    res.json({ verdict: entry.proxy === 'yes' ? 'possible' : 'not_detected', type: entry.type || null, provider: entry.provider || null, source: 'proxycheck.io' });
-  } catch (error) { res.status(502).json({ error: error.message }); }
+    const value = { verdict: entry.proxy === 'yes' ? 'possible' : 'not_detected', type: entry.type || null, provider: entry.provider || null, source: 'proxycheck.io' };
+    if (vpnCache.size > 500) vpnCache.delete(vpnCache.keys().next().value);
+    vpnCache.set(ip, { value, expires: Date.now() + 6 * 60 * 60 * 1000 });
+    res.json(value);
+  } catch (error) { res.status(502).json({ error: error.message || 'Сервис VPN-проверки недоступен или исчерпан лимит запросов' }); }
 });
 app.get('/api/dns', async (req, res) => {
   const domain = String(req.query.domain || '').trim().toLowerCase();
